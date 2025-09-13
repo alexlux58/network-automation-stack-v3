@@ -1,0 +1,19 @@
+# Traefik dynamic configuration
+# This file is a placeholder for additional routing rules
+# Most routing is handled via Docker labels in docker-compose.yml
+
+http:
+  middlewares: {}
+  routers: {}
+  services: {}
+
+# Example middleware for adding security headers
+# http:
+#   middlewares:
+#     security-headers:
+#       headers:
+#         customRequestHeaders:
+#           X-Forwarded-Proto: "https"
+#         customResponseHeaders:
+#           X-Frame-Options: "DENY"
+#           X-Content-Type-Options: "nosniff"

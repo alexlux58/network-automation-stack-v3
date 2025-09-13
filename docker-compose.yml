@@ -1,0 +1,167 @@
+version: '3.8'
+
+services:
+  # Reverse proxy for routing
+  reverse-proxy:
+    image: traefik:v3
+    container_name: traefik
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      # - "443:443"  # Uncomment for HTTPS support
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+    networks:
+      - netmgmt
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik.rule=Host(`traefik.localhost`)"
+      - "traefik.http.routers.traefik.entrypoints=web"
+      - "traefik.http.services.traefik.loadbalancer.server.port=8080"
+
+  # Shared PostgreSQL database
+  postgres:
+    image: postgres:17-alpine
+    container_name: postgres
+    restart: unless-stopped
+    env_file:
+      - ./env/postgres.env
+    environment:
+      - POSTGRES_DB=netmgmt_meta
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - netmgmt
+
+  # Redis for NetBox sessions
+  redis:
+    image: valkey/valkey:8.1-alpine
+    container_name: redis
+    restart: unless-stopped
+    volumes:
+      - netbox-redis-data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - netmgmt
+
+  # Redis for NetBox cache
+  redis-cache:
+    image: valkey/valkey:8.1-alpine
+    container_name: redis-cache
+    restart: unless-stopped
+    volumes:
+      - netbox-redis-cache-data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - netmgmt
+
+  # NetBox application
+  netbox:
+    image: netboxcommunity/netbox:v4.4-3.4.0
+    container_name: netbox
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+    env_file:
+      - ./env/netbox.env
+    volumes:
+      - netbox-media-files:/opt/netbox/netbox/media
+      - netbox-scripts-files:/opt/netbox/netbox/scripts
+      - netbox-reports-files:/opt/netbox/netbox/reports
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/login/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - netmgmt
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.netbox.rule=Host(`${NETBOX_HOST}`)"
+      - "traefik.http.routers.netbox.entrypoints=web"
+      - "traefik.http.services.netbox.loadbalancer.server.port=8080"
+
+  # NetBox worker
+  netbox-worker:
+    image: netboxcommunity/netbox:v4.4-3.4.0
+    container_name: netbox-worker
+    restart: unless-stopped
+    depends_on:
+      - netbox
+    env_file:
+      - ./env/netbox.env
+    command: python manage.py rqworker
+    networks:
+      - netmgmt
+
+  # Nautobot application
+  nautobot:
+    image: ghcr.io/nautobot/nautobot:2.3
+    container_name: nautobot
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ./env/nautobot.env
+    volumes:
+      - nautobot-media:/opt/nautobot/media
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - netmgmt
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.nautobot.rule=Host(`${NAUTOBOT_HOST}`)"
+      - "traefik.http.routers.nautobot.entrypoints=web"
+      - "traefik.http.services.nautobot.loadbalancer.server.port=8080"
+
+  # Nautobot worker
+  nautobot-worker:
+    image: ghcr.io/nautobot/nautobot:2.3
+    container_name: nautobot-worker
+    restart: unless-stopped
+    depends_on:
+      - nautobot
+    env_file:
+      - ./env/nautobot.env
+    command: celery -A nautobot worker --loglevel=info
+    networks:
+      - netmgmt
+
+volumes:
+  pg-data:
+  netbox-media-files:
+  netbox-scripts-files:
+  netbox-reports-files:
+  netbox-redis-data:
+  netbox-redis-cache-data:
+  nautobot-media:
+
+networks:
+  netmgmt:
+    driver: bridge
